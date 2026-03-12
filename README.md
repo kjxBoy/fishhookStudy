@@ -1,12 +1,13 @@
 # fishhook
 
-__fishhook__ is a very simple library that enables dynamically rebinding symbols in Mach-O binaries running on iOS in the simulator and on device. This provides functionality that is similar to using [`DYLD_INTERPOSE`][interpose] on OS X. At Facebook, we've found it useful as a way to hook calls in libSystem for debugging/tracing purposes (for example, auditing for double-close issues with file descriptors).
+__fishhook__ 是一个非常简单的库，能够在 iOS 模拟器和真机上运行的 Mach-O 二进制文件中动态地重新绑定符号。其功能类似于在 macOS 上使用 [`DYLD_INTERPOSE`][interpose]。在 Facebook 内部，我们发现它非常适合用于调试和追踪目的，例如 hook libSystem 中的调用（比如审计文件描述符的双重关闭问题）。
 
 [interpose]: http://opensource.apple.com/source/dyld/dyld-210.2.3/include/mach-o/dyld-interposing.h "<mach-o/dyld-interposing.h>"
 
-## Usage
+## 使用方法
 
-Once you add `fishhook.h`/`fishhook.c` to your project, you can rebind symbols as follows:
+将 `fishhook.h` 和 `fishhook.c` 添加到你的项目后，即可按如下方式重新绑定符号：
+
 ```Objective-C
 #import <dlfcn.h>
 
@@ -28,7 +29,7 @@ int my_open(const char *path, int oflag, ...) {
   mode_t mode = 0;
  
   if ((oflag & O_CREAT) != 0) {
-    // mode only applies to O_CREAT
+    // mode 仅在 O_CREAT 时适用
     va_start(ap, oflag);
     mode = va_arg(ap, int);
     va_end(ap);
@@ -45,8 +46,8 @@ int main(int argc, char * argv[])
   @autoreleasepool {
     rebind_symbols((struct rebinding[2]){{"close", my_close, (void *)&orig_close}, {"open", my_open, (void *)&orig_open}}, 2);
  
-    // Open our own binary and print out first 4 bytes (which is the same
-    // for all Mach-O binaries on a given architecture)
+    // 打开自身的二进制文件并打印前 4 个字节
+    // （所有同架构的 Mach-O 二进制文件的魔数相同）
     int fd = open(argv[0], O_RDONLY);
     uint32_t magic_number = 0;
     read(fd, &magic_number, 4);
@@ -57,7 +58,9 @@ int main(int argc, char * argv[])
   }
 }
 ```
-### Sample output
+
+### 示例输出
+
 ```
 Calling real open('/var/mobile/Applications/161DA598-5B83-41F5-8A44-675491AF6A2C/Test.app/Test', 0)
 Mach-O Magic Number: feedface 
@@ -65,11 +68,18 @@ Calling real close(3)
 ...
 ```
 
-## How it works
+## 工作原理
 
-`dyld` binds lazy and non-lazy symbols by updating pointers in particular sections of the `__DATA` segment of a Mach-O binary. __fishhook__ re-binds these symbols by determining the locations to update for each of the symbol names passed to `rebind_symbols` and then writing out the corresponding replacements.
+`dyld` 通过更新 Mach-O 二进制文件 `__DATA` 段特定节区中的指针来绑定懒加载（lazy）和非懒加载（non-lazy）符号。__fishhook__ 通过确定传入 `rebind_symbols` 的每个符号名称所对应的指针位置，并将其替换为对应的新实现，从而实现符号的重新绑定。
 
-For a given image, the `__DATA` segment may contain two sections that are relevant for dynamic symbol bindings: `__nl_symbol_ptr` and `__la_symbol_ptr`. `__nl_symbol_ptr` is an array of pointers to non-lazily bound data (these are bound at the time a library is loaded) and `__la_symbol_ptr` is an array of pointers to imported functions that is generally filled by a routine called `dyld_stub_binder` during the first call to that symbol (it's also possible to tell `dyld` to bind these at launch). In order to find the name of the symbol that corresponds to a particular location in one of these sections, we have to jump through several layers of indirection. For the two relevant sections, the section headers (`struct section`s from `<mach-o/loader.h>`) provide an offset (in the `reserved1` field) into what is known as the indirect symbol table. The indirect symbol table, which is located in the `__LINKEDIT` segment of the binary, is just an array of indexes into the symbol table (also in `__LINKEDIT`) whose order is identical to that of the pointers in the non-lazy and lazy symbol sections. So, given `struct section nl_symbol_ptr`, the corresponding index in the symbol table of the first address in that section is `indirect_symbol_table[nl_symbol_ptr->reserved1]`. The symbol table itself is an array of `struct nlist`s (see `<mach-o/nlist.h>`), and each `nlist` contains an index into the string table in `__LINKEDIT` which where the actual symbol names are stored. So, for each pointer `__nl_symbol_ptr` and `__la_symbol_ptr`, we are able to find the corresponding symbol and then the corresponding string to compare against the requested symbol names, and if there is a match, we replace the pointer in the section with the replacement.
+对于一个给定的镜像（image），`__DATA` 段中可能包含两个与动态符号绑定相关的节区：`__nl_symbol_ptr` 和 `__la_symbol_ptr`。`__nl_symbol_ptr` 是一个指向非懒加载数据的指针数组（在库加载时即完成绑定），而 `__la_symbol_ptr` 是一个指向导入函数的指针数组，通常由 `dyld_stub_binder` 在该符号第一次被调用时填充（也可以指定 `dyld` 在启动时绑定这些符号）。
 
-The process of looking up the name of a given entry in the lazy or non-lazy pointer tables looks like this:
-![Visual explanation](http://i.imgur.com/HVXqHCz.png)
+为了找到与某个节区中特定位置对应的符号名称，需要经历多层间接寻址：对于上述两个相关节区，节区头（`<mach-o/loader.h>` 中的 `struct section`）的 `reserved1` 字段提供了一个偏移量，指向所谓的**间接符号表**（indirect symbol table）。间接符号表位于二进制文件的 `__LINKEDIT` 段，它是一个索引数组，指向符号表（同样在 `__LINKEDIT` 中），其顺序与非懒加载和懒加载符号节区中的指针顺序完全对应。
+
+因此，对于 `struct section nl_symbol_ptr`，该节区第一个地址在符号表中对应的索引为 `indirect_symbol_table[nl_symbol_ptr->reserved1]`。符号表本身是一个 `struct nlist` 数组（见 `<mach-o/nlist.h>`），每个 `nlist` 包含一个指向 `__LINKEDIT` 中字符串表的索引，符号的实际名称就存储在那里。
+
+这样，对于 `__nl_symbol_ptr` 和 `__la_symbol_ptr` 中的每一个指针，我们都能找到对应的符号，进而找到对应的字符串与目标符号名进行比较。一旦匹配，就将该节区中的指针替换为新的实现。
+
+在懒加载或非懒加载指针表中查找某个条目名称的完整流程如下所示：
+
+![原理示意图](http://i.imgur.com/HVXqHCz.png)
